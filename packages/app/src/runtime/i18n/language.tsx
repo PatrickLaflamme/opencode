@@ -286,13 +286,18 @@ export const { use: useLanguage, provider: LanguageProvider } = createSimpleCont
       pluralForm(key, pluralCategory(intl(), count), { ...params, count })
 
     // "2 subagents · 1 shell", or one group alone, as the iOS app's background-work capsule reads.
-    const activitySummary = (counts: { subagents: number; shells: number }) => {
+    // A resource watch is a third group: "1 subscription", or appended when other work is also running.
+    const activitySummary = (counts: { subagents: number; shells: number; subscriptions?: number }) => {
       const subagents = counts.subagents ? plural("session.activity.subagents", counts.subagents) : undefined
       const shells = counts.shells ? plural("session.activity.shells", counts.shells) : undefined
+      const subscriptions = counts.subscriptions
+        ? plural("session.activity.subscriptions", counts.subscriptions)
+        : undefined
+      const work = subagents && shells ? t("session.activity.summary", { subagents, shells }) : (subagents ?? shells)
 
-      if (subagents && shells) return t("session.activity.summary", { subagents, shells })
-
-      return subagents ?? shells ?? ""
+      if (!subscriptions) return work ?? ""
+      if (!work) return subscriptions
+      return t("session.activity.summary.withSubscriptions", { work, subscriptions })
     }
 
     const tDynamic = <Key extends Extract<keyof Dictionary, string>>(
@@ -312,10 +317,10 @@ export const { use: useLanguage, provider: LanguageProvider } = createSimpleCont
     }
 
     const activitySummaryRich = (
-      counts: { subagents: number; shells: number },
+      counts: { subagents: number; shells: number; subscriptions?: number },
       render: (label: string) => JSX.Element,
     ) => {
-      if (!counts.subagents || !counts.shells) return render(activitySummary(counts))
+      if (counts.subscriptions || !counts.subagents || !counts.shells) return render(activitySummary(counts))
 
       return rich("session.activity.summary", {
         subagents: render(activitySummary({ subagents: counts.subagents, shells: 0 })),

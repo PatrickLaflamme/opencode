@@ -657,12 +657,15 @@ export interface BackgroundTask {
    * What runs.
    * - `shell`: a shell command.
    * - `subagent`: a subagent.
+   * - `subscription`: an MCP resource this session is watching.
    */
-  type: "shell" | "subagent"
+  type: "shell" | "subagent" | "subscription"
   /** The task's display label. */
   label: string
   /** The subagent's name, for `subagent` tasks. */
   agent?: string
+  /** The MCP server, for `subscription` tasks. */
+  server?: string
 }
 
 /**
@@ -701,7 +704,7 @@ export interface MountedSession extends SessionRef {
   readonly directory: string
   /** The session runs in the project root rather than a worktree. Reactive. */
   readonly local: boolean
-  /** Shell commands and subagents the session moved to the background; empty once another session is routed. */
+  /** Shell commands, subagents, and MCP resource watches the session has in the background; empty once another session is routed. */
   readonly background: readonly BackgroundTask[]
 }
 

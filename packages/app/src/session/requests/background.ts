@@ -5,6 +5,7 @@ import type {
   SessionMessageInfo,
   ShellInfo,
 } from "@opencode/client/promise"
+import { activeResourceSubscriptions } from "@opencode/util/resource-subscriptions"
 import { Option, Schema } from "effect"
 import { createMemo } from "solid-js"
 
@@ -23,6 +24,7 @@ type Subagent = {
 type Task =
   | (Omit<Subagent, "label"> & { label: string })
   | { id: string; type: "shell"; label: string; started: number }
+  | { id: string; type: "subscription"; label: string; server: string }
 
 const decodeString = Schema.decodeUnknownOption(Schema.String)
 
@@ -40,8 +42,15 @@ export function createSessionBackground(input: {
     // The latest call for each child names it; calls never decide whether it still runs.
     const calls = new Map<string, { label: string | undefined; agent: string | undefined; started: number }>()
     const id = input.sessionID()
+    const messages = id ? input.messages(id) : []
+    const subscriptions = activeResourceSubscriptions(messages).map((watch) => ({
+      id: watch.id,
+      type: "subscription" as const,
+      label: watch.uri,
+      server: watch.server,
+    }))
 
-    const assistant = (id ? input.messages(id) : []).reduce<SessionMessageAssistant | undefined>((latest, message) => {
+    const assistant = messages.reduce<SessionMessageAssistant | undefined>((latest, message) => {
       if (message.type !== "assistant") return latest
       message.content.forEach((part) => {
         if (part.type !== "tool" || part.name !== "subagent" || part.state.status === "streaming") return
@@ -60,6 +69,7 @@ export function createSessionBackground(input: {
 
     return {
       calls,
+      subscriptions,
       blocking:
         assistant?.content.flatMap((part) => {
           if (part.type !== "tool" || part.state.status !== "running") return []
@@ -149,8 +159,8 @@ export function createSessionBackground(input: {
     return [...pending, ...running.filter((task) => task.partID), ...running.filter((task) => !task.partID)]
   })
 
-  // Background work: running subagents whose call no longer blocks the run, and the session's live shells outside
-  // its blocking calls.
+  // Background work: running subagents whose call no longer blocks the run, the session's live shells outside
+  // its blocking calls, and MCP resources this session is still watching.
   const tasks = createMemo((): Task[] => {
     const id = input.sessionID()
 
@@ -173,6 +183,7 @@ export function createSessionBackground(input: {
     return [
       ...subagents().flatMap((task) => (task.partID ? [] : [{ ...task, label: task.label ?? task.id }])),
       ...shells,
+      ...current.subscriptions,
     ]
   })
 

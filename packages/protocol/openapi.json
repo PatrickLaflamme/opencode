@@ -18654,6 +18654,15 @@
           },
           "protocol": {
             "$ref": "#/components/schemas/Mcp.Protocol"
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "wake": {
+            "type": "boolean"
           }
         },
         "required": ["type", "command"],
@@ -18743,6 +18752,15 @@
           },
           "protocol": {
             "$ref": "#/components/schemas/Mcp.Protocol"
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "wake": {
+            "type": "boolean"
           }
         },
         "required": ["type", "url"],

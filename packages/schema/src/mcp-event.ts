@@ -2,6 +2,7 @@ export * as McpEvent from "./mcp-event.js"
 
 import { Schema } from "effect"
 import { Event } from "./event.js"
+import { optional } from "./schema.js"
 
 export const ToolsChanged = Event.ephemeral({
   type: "mcp.tools.changed",
@@ -17,6 +18,19 @@ export const ResourcesChanged = Event.ephemeral({
   },
 })
 
+// A subscribed resource changed. `wake` is the server config's opt-in to steer the workspace.
+// `subscribers` are session ids that asked to watch this URI. `text` is the fresh resources/read.
+export const ResourceUpdated = Event.ephemeral({
+  type: "mcp.resource.updated",
+  schema: {
+    server: Schema.String,
+    uri: Schema.String,
+    wake: Schema.Boolean,
+    subscribers: Schema.Array(Schema.String),
+    text: optional(Schema.String),
+  },
+})
+
 // Emitted whenever a server's connection status settles (connected, failed, needs_auth, closed) so
 // observers can refresh status without polling.
 export const StatusChanged = Event.ephemeral({
@@ -26,4 +40,4 @@ export const StatusChanged = Event.ephemeral({
   },
 })
 
-export const Definitions = Event.inventory(ToolsChanged, ResourcesChanged, StatusChanged)
+export const Definitions = Event.inventory(ToolsChanged, ResourcesChanged, ResourceUpdated, StatusChanged)
