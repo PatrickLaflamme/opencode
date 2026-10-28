@@ -26,7 +26,7 @@ import {
   type Transport,
   type VersionNegotiationOptions,
 } from "@modelcontextprotocol/client"
-import { Cause, Clock, Duration, Effect, Exit, Schedule, Schema } from "effect"
+import { Cause, Clock, Deferred, Duration, Effect, Exit, Schedule, Schema, Scope } from "effect"
 import { ConfigMCP } from "@opencode/schema/config/mcp"
 import type { Session } from "@opencode/schema/session"
 import { McpStdio } from "./stdio.js"
@@ -135,6 +135,13 @@ export interface Connection {
   readonly onToolsChanged: (callback: () => void) => void
   readonly onPromptsChanged: (callback: () => void) => void
   readonly onResourcesChanged: (callback: () => void) => void
+  readonly onResourceUpdated: (callback: (uri: string) => void) => void
+  /**
+   * Subscribes to update notifications for these resource URIs. On a 2026-07-28 connection that is a
+   * `subscriptions/listen` stream; on a legacy connection it is `resources/subscribe`. The listen
+   * stream is kept open until the connection scope closes and is reopened if the server drops it.
+   */
+  readonly subscribeResources: (uris: readonly string[]) => Effect.Effect<void, never, Scope.Scope>
 }
 
 /**
@@ -154,6 +161,7 @@ export const connect = Effect.fnUntraced(function* (
   // The SDK takes list-changed handlers at construction, but consumers register after connect. On a
   // modern connection the SDK opens the subscriptions/listen stream behind these itself.
   const changed = { tools: () => {}, prompts: () => {}, resources: () => {} }
+  let resourceUpdated = (_uri: string) => {}
   const listChanged = (key: keyof typeof changed) => ({
     autoRefresh: false,
     debounceMs: 0,
@@ -212,6 +220,11 @@ export const connect = Effect.fnUntraced(function* (
         Effect.runPromise(elicitation.complete({ server, elicitationID: notification.params.elicitationId })),
       )
     }
+    // Registered before connect so it is in place before either era delivers notifications/resources/updated.
+    // listChanged owns the list_changed handlers; this one is a different method and does not replace them.
+    client.setNotificationHandler("notifications/resources/updated", (notification) => {
+      resourceUpdated(notification.params.uri)
+    })
 
     yield* Effect.tryPromise({
       try: (signal) =>
@@ -376,6 +389,66 @@ export const connect = Effect.fnUntraced(function* (
       onResourcesChanged: (callback) => {
         changed.resources = callback
       },
+      onResourceUpdated: (callback) => {
+        resourceUpdated = callback
+      },
+      subscribeResources: (uris) =>
+        Effect.gen(function* () {
+          const unique = [...new Set(uris)]
+          if (unique.length === 0) return
+          // Legacy era only: per-URI resources/subscribe. 2026-07-28 delivers updates on subscriptions/listen.
+          if (client.getProtocolEra() !== "modern") {
+            yield* Effect.forEach(
+              unique,
+              (uri) =>
+                request("subscribe to MCP resource", (signal) => client.subscribeResource({ uri }, { signal })).pipe(
+                  Effect.ignore,
+                ),
+              { concurrency: "unbounded", discard: true },
+            )
+            return
+          }
+
+          const ready = yield* Deferred.make<void>()
+          const announce = Effect.suspend(() =>
+            Deferred.isDone(ready).pipe(
+              Effect.flatMap((done) => (done ? Effect.void : Deferred.succeed(ready, undefined))),
+            ),
+          )
+          yield* Effect.gen(function* () {
+            let current: { close: () => Promise<void> } | undefined
+            yield* Effect.addFinalizer(() =>
+              Effect.promise(() => current?.close() ?? Promise.resolve()).pipe(Effect.ignore),
+            )
+            while (true) {
+              const opened = yield* Effect.tryPromise({
+                try: () => client.listen({ resourceSubscriptions: unique }),
+                catch: failure,
+              }).pipe(Effect.exit)
+              if (Exit.isFailure(opened)) {
+                const error = Cause.squash(opened.cause)
+                yield* Effect.logWarning("failed to listen for MCP resource updates", {
+                  server,
+                  error: error instanceof Error ? error.message : String(error),
+                })
+                yield* announce
+                return
+              }
+              current = opened.value
+              yield* Effect.logInfo("subscribed to MCP resources", {
+                server,
+                uris: unique,
+                honored: opened.value.honoredFilter,
+              })
+              yield* announce
+              const reason = yield* Effect.promise(() => opened.value.closed)
+              current = undefined
+              if (reason !== "remote") return
+              yield* Effect.sleep("1 second")
+            }
+          }).pipe(Effect.forkScoped({ startImmediately: true }))
+          yield* Deferred.await(ready)
+        }),
     } satisfies Connection
   }
 

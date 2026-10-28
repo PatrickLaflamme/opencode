@@ -424,6 +424,28 @@ export const layer = (options?: Options) =>
         connection.onResourcesChanged(() => live(bus.publish(McpEvent.ResourcesChanged, { server: name })))
       }
 
+      // Resource subscriptions are opt-in per server. `wake` is a second opt-in so a chatty server
+      // can refresh observers without steering every session.
+      const subscribeConfigured = (name: ServerName, entry: ServerEntry, connection: McpClient.Connection) => {
+        const uris = [...new Set(entry.config.subscriptions ?? [])]
+        const scope = entry.scope
+        if (uris.length === 0 || !scope) return Effect.void
+        const live = whenLive(name, entry, connection)
+        connection.onResourceUpdated((uri) => {
+          if (!uris.includes(uri)) return
+          live(
+            bus.publish(McpEvent.ResourceUpdated, {
+              server: name,
+              uri,
+              wake: entry.config.wake === true,
+            }),
+          )
+        })
+        // The listen fiber has to die with this connection, not with the location: the connection's
+        // own finalizers live on `scope`.
+        return connection.subscribeResources(uris).pipe(Scope.provide(scope))
+      }
+
       const startServer = (name: ServerName, entry: ServerEntry) =>
         Effect.gen(function* () {
           // Announce the handshake so connect() and credential reconnects don't show a stale
@@ -456,8 +478,9 @@ export const layer = (options?: Options) =>
             entry.client = result.value.connection
             entry.tools = result.value.tools.map((tool) => toTool(name, entry, tool))
             entry.prompts = []
-            entry.status = { status: "connected" }
             watch(name, entry, result.value.connection)
+            yield* subscribeConfigured(name, entry, result.value.connection)
+            entry.status = { status: "connected" }
             yield* Effect.logInfo("mcp connected", { server: name, tools: entry.tools.length })
             // The tool registry reads on this event; a late-connecting server has no other way to appear.
             yield* bus.publish(McpEvent.ToolsChanged, { server: name })

@@ -17,6 +17,16 @@ export const ResourcesChanged = Event.ephemeral({
   },
 })
 
+// A subscribed resource changed. `wake` is the server's opt-in to steer the update into sessions.
+export const ResourceUpdated = Event.ephemeral({
+  type: "mcp.resource.updated",
+  schema: {
+    server: Schema.String,
+    uri: Schema.String,
+    wake: Schema.Boolean,
+  },
+})
+
 // Emitted whenever a server's connection status settles (connected, failed, needs_auth, closed) so
 // observers can refresh status without polling.
 export const StatusChanged = Event.ephemeral({
@@ -26,4 +36,4 @@ export const StatusChanged = Event.ephemeral({
   },
 })
 
-export const Definitions = Event.inventory(ToolsChanged, ResourcesChanged, StatusChanged)
+export const Definitions = Event.inventory(ToolsChanged, ResourcesChanged, ResourceUpdated, StatusChanged)
