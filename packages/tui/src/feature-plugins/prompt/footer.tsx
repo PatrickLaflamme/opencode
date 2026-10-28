@@ -1,4 +1,5 @@
 import { Plugin } from "@opencode/plugin/tui"
+import { activeResourceSubscriptions } from "@opencode/util/resource-subscriptions"
 import { createMemo, createSignal, Match, Show, Switch } from "solid-js"
 import { contextUsage, formatContextUsage } from "../../util/session"
 import { useTerminalDimensions } from "@opentui/solid"
@@ -31,6 +32,11 @@ export function PromptFooter(props: {
       .filter((shell) => shell.metadata.sessionID === props.sessionID).length
     return count ? `${count} shell${count === 1 ? "" : "s"}` : undefined
   })
+  const subscriptions = createMemo(() => {
+    if (!props.sessionID) return
+    const count = activeResourceSubscriptions(props.context.data.session.message.list(props.sessionID)).length
+    return count ? `${count} subscription${count === 1 ? "" : "s"}` : undefined
+  })
   const status = createMemo(() => {
     if (!props.sessionID) return []
     const session = props.context.data.session.get(props.sessionID)
@@ -46,7 +52,7 @@ export function PromptFooter(props: {
       cost > 0 ? money.format(cost) : undefined,
     ].filter((item): item is string => Boolean(item))
   })
-  const live = createMemo(() => Boolean(subagents() || shells()))
+  const live = createMemo(() => Boolean(subagents() || shells() || subscriptions()))
   const shortcut = (id: string) => props.context.keymap.shortcuts(id)[0]
   const layout = createMemo(() => {
     const command = shortcut("command.palette.show")
@@ -79,8 +85,10 @@ export function PromptFooter(props: {
                       {(value) => <span style={{ fg: props.context.theme.text.base }}>{value()} </span>}
                     </Show>
                     <Show when={subagents()}>{(value) => <>{value()}</>}</Show>
-                    <Show when={subagents() && shells()}> · </Show>
+                    <Show when={subagents() && (shells() || subscriptions())}> · </Show>
                     <Show when={shells()}>{(value) => <>{value()}</>}</Show>
+                    <Show when={shells() && subscriptions()}> · </Show>
+                    <Show when={subscriptions()}>{(value) => <>{value()}</>}</Show>
                   </text>
                 </box>
               </Show>

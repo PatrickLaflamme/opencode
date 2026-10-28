@@ -15,6 +15,10 @@ export function matchesSubscribedUri(subscribed: string, notified: string) {
   return next === "/" || next === "?" || next === "#"
 }
 
+export function subscriptionEventNotice(uri: string) {
+  return `Event for subscription to ${uri} received`
+}
+
 export function resourceUpdateText(parts: readonly { readonly type: "text"; readonly text: string }[]) {
   const text = parts.map((part) => part.text).join("\n")
   if (text.length === 0) return undefined

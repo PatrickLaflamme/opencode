@@ -441,6 +441,21 @@ export function createSessionTimelineRowRenderer(input: {
       return { label: i18n.t("ui.sessionTimeline.notice.restart") }
     const source = message.metadata?.source
 
+    if (source === "subscription") {
+      const uri = message.metadata?.uri
+      const resource = Predicate.isString(uri) ? uri : ""
+
+      if (!resource) return { label: message.description ?? message.text }
+
+      return {
+        label: i18n.tDynamic(
+          "ui.sessionTimeline.notice.subscription",
+          "Event for subscription to {{resource}} received",
+          { resource },
+        ),
+      }
+    }
+
     if (source === "subagent" || source === "shell") {
       const agent = message.metadata?.agent
 

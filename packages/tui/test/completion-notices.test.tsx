@@ -19,8 +19,20 @@ test.each([40, 120])("shell completion notices do not navigate at width %s", asy
     tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
     time: { created: 0, updated: 0 },
   }
+  const subscription = "Event for subscription to docs://readme received"
   const notices = [
     { source: "shell", state: "completed", shellID: "shell-1", label: "Shell finished", description: "Done" },
+    ...(width >= 120
+      ? [
+          {
+            source: "subscription",
+            state: "completed",
+            uri: "docs://readme",
+            label: subscription,
+            description: subscription,
+          },
+        ]
+      : []),
     {
       source: "shell",
       state: "error",

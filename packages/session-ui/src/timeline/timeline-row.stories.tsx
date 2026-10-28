@@ -284,6 +284,14 @@ const AgentActivityNotices = {
             time: { created: STORY_TIME + 3 },
           },
           {
+            id: "msg_notice_subscription",
+            type: "synthetic",
+            text: "Event for subscription to docs://readme received\nhello",
+            description: "Event for subscription to docs://readme received",
+            metadata: { source: "subscription", server: "docs", uri: "docs://readme", state: "completed" },
+            time: { created: STORY_TIME + 3.5 },
+          },
+          {
             id: "msg_notice_restart",
             type: "synthetic",
             text: "continue",

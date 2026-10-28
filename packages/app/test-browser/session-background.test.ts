@@ -61,6 +61,29 @@ const notification = (id: string, metadata: Record<string, string>) => ({
 })
 
 describe("createSessionBackground", () => {
+  test("lists an active resource subscription beside background work", () => {
+    createRoot((dispose) => {
+      const watch = tool(
+        "watch",
+        "opencode_subscribe_mcp_resource",
+        { server: "docs", uri: "docs://readme", honored: "true" },
+        { server: "docs", uri: "docs://readme" },
+      )
+      const background = createSessionBackground({
+        sessionID: () => "root",
+        messages: () => [assistant("assistant", [watch])],
+        sessions: () => [],
+        status: () => "idle",
+        shells: () => [],
+      })
+
+      expect(background.tasks()).toEqual([
+        { id: "watch", type: "subscription", label: "docs://readme", server: "docs" },
+      ])
+      dispose()
+    })
+  })
+
   test("excludes completed children and shells using either shell or tool-call IDs", () => {
     createRoot((dispose) => {
       const background = createSessionBackground({

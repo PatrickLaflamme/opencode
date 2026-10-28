@@ -5,6 +5,7 @@ import { McpEvent } from "@opencode/schema/mcp-event"
 import { Effect, Scope, Stream } from "effect"
 import { Bus } from "../bus.js"
 import { Location } from "../location.js"
+import { subscriptionEventNotice } from "../mcp/subscription.js"
 import { Session } from "../session.js"
 
 export interface WakeCandidate {
@@ -56,16 +57,18 @@ export const Plugin: EffectPlugin<Session.Service | Bus.Service | Location.Servi
     const steer = (
       sessionID: Session.ID,
       event: { readonly server: string; readonly uri: string; readonly text?: string },
-    ) =>
-      sessions
+    ) => {
+      const notice = subscriptionEventNotice(event.uri)
+      return sessions
         .synthetic({
           sessionID,
-          description: `${event.server} updated ${event.uri}`,
+          description: notice,
           text: [
+            notice,
             `MCP server "${event.server}" reported that resource ${event.uri} changed.`,
             event.text ?? "OpenCode re-read the resource and it had no text contents.",
           ].join("\n"),
-          metadata: { source: "mcp.subscription", server: event.server, uri: event.uri },
+          metadata: { source: "subscription", server: event.server, uri: event.uri, state: "completed" },
         })
         .pipe(
           Effect.catch((error: unknown) =>
@@ -77,6 +80,7 @@ export const Plugin: EffectPlugin<Session.Service | Bus.Service | Location.Servi
             }),
           ),
         )
+    }
 
     yield* bus.subscribe(McpEvent.ResourceUpdated).pipe(
       Stream.filter((event) => event.data.wake || event.data.subscribers.length > 0),

@@ -133,9 +133,9 @@ it.live("steers the newest session when an MCP subscription update asks to wake"
       type: "synthetic",
       delivery: "steer",
       payload: {
-        description: "docs updated docs://readme",
-        text: 'MCP server "docs" reported that resource docs://readme changed.\nhello',
-        metadata: { source: "mcp.subscription", server: "docs", uri: "docs://readme" },
+        description: "Event for subscription to docs://readme received",
+        text: 'Event for subscription to docs://readme received\nMCP server "docs" reported that resource docs://readme changed.\nhello',
+        metadata: { source: "subscription", server: "docs", uri: "docs://readme", state: "completed" },
       },
     })
     expect(yield* sessions.inbox(older.id)).toEqual([])

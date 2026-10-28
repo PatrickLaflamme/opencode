@@ -1,9 +1,11 @@
 import type { SessionInfo, SessionMessageAssistant, SessionMessageInfo, ShellInfo } from "@opencode/client/promise"
+import { activeResourceSubscriptions } from "@opencode/util/resource-subscriptions"
 import { createMemo } from "solid-js"
 
 type Task =
   | { id: string; type: "subagent"; label: string; agent?: string }
   | { id: string; type: "shell"; label: string }
+  | { id: string; type: "subscription"; label: string; server: string }
 
 export function createSessionBackground(input: {
   sessionID: () => string | undefined
@@ -17,8 +19,16 @@ export function createSessionBackground(input: {
     const subagents: { id: string; type: "subagent"; label: string; agent: string | undefined }[] = []
     const shells: { partID: string; task: { id: string; type: "shell"; label: string } }[] = []
     const id = input.sessionID()
+    const messages = id ? input.messages(id) : []
 
-    const assistant = (id ? input.messages(id) : []).reduce<SessionMessageAssistant | undefined>((latest, message) => {
+    const subscriptions = activeResourceSubscriptions(messages).map((watch) => ({
+      id: watch.id,
+      type: "subscription" as const,
+      label: watch.uri,
+      server: watch.server,
+    }))
+
+    const assistant = messages.reduce<SessionMessageAssistant | undefined>((latest, message) => {
       if (message.type === "synthetic") {
         if (message.metadata?.source === "subagent" && typeof message.metadata.childID === "string")
           completed.add(message.metadata.childID)
@@ -75,6 +85,7 @@ export function createSessionBackground(input: {
       shells: shells
         .filter((item) => !completed.has(item.partID) && !completed.has(item.task.id))
         .map((item) => item.task),
+      subscriptions,
       blocking:
         assistant?.content.flatMap((part) => {
           if (part.type !== "tool" || part.state.status !== "running") return []
@@ -133,7 +144,10 @@ export function createSessionBackground(input: {
 
     return [
       ...new Map<string, Task>(
-        [...current.subagents, ...active, ...current.shells, ...running].map((task) => [task.id, task]),
+        [...current.subagents, ...active, ...current.shells, ...running, ...current.subscriptions].map((task) => [
+          task.id,
+          task,
+        ]),
       ).values(),
     ]
   })

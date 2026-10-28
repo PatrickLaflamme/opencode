@@ -137,7 +137,10 @@ export const Plugin = {
                 uri: input.uri,
                 subscriber: context.sessionID,
               })
-              return { output: { server: input.server, uri: input.uri, honored: result.honored } }
+              return {
+                output: { server: input.server, uri: input.uri, honored: result.honored },
+                metadata: { server: input.server, uri: input.uri, honored: result.honored },
+              }
             }).pipe(
               Effect.mapError((error) =>
                 error instanceof ToolFailure

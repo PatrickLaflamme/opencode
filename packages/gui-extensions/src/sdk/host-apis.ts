@@ -528,12 +528,15 @@ export interface BackgroundTask {
    * What runs.
    * - `shell`: a shell command.
    * - `subagent`: a subagent.
+   * - `subscription`: an MCP resource this session is watching.
    */
-  type: "shell" | "subagent"
+  type: "shell" | "subagent" | "subscription"
   /** The task's display label. */
   label: string
   /** The subagent's name, for `subagent` tasks. */
   agent?: string
+  /** The MCP server, for `subscription` tasks. */
+  server?: string
 }
 
 /**

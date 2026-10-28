@@ -19,9 +19,10 @@ const neutral = "light-dark(var(--v2-text-text-base), #ffffff)"
 
 type RunningItem = {
   key: string
-  type: "subagent" | "shell"
+  type: "subagent" | "shell" | "subscription"
   label?: string
   agent?: string
+  server?: string
   sessionID?: string
   target: string
 }
@@ -70,6 +71,9 @@ export function SessionRunningMenu(props: {
         : [],
     ),
     ...props.tasks.flatMap((task) => (task.type === "shell" ? [{ ...task, key: task.id, target: task.id }] : [])),
+    ...props.tasks.flatMap((task) =>
+      task.type === "subscription" ? [{ ...task, key: task.id, server: task.server, target: task.id }] : [],
+    ),
   ])
 
   const viewing = (item: RunningItem) => !!item.sessionID && item.sessionID === props.sessionID
@@ -247,7 +251,12 @@ export function SessionRunningMenu(props: {
                   >
                     <Show
                       when={item.type === "subagent"}
-                      fallback={<Icon name="console" class="shrink-0 text-v2-icon-icon-muted" />}
+                      fallback={
+                        <Icon
+                          name={item.type === "subscription" ? "mcp" : "console"}
+                          class="shrink-0 text-v2-icon-icon-muted"
+                        />
+                      }
                     >
                       {/* Built-in agents have theme tokens; any other agent keeps the neutral color. */}
                       <SessionProgressIndicatorV2
@@ -257,13 +266,7 @@ export function SessionRunningMenu(props: {
                         }}
                       />
                     </Show>
-                    <span class="shrink-0 font-[530]">
-                      {item.type === "shell"
-                        ? language.t("ui.tool.shell")
-                        : item.agent
-                          ? `${item.agent[0].toUpperCase()}${item.agent.slice(1)}`
-                          : language.t("ui.tool.agent.default")}
-                    </span>
+                    <span class="shrink-0 font-[530]">{runningLabel(item, language.t)}</span>
                     {/* Menu rows end 6px in for trailing controls; text alone ends 12px in, like the leading edge. */}
                     <span
                       dir="auto"
@@ -309,4 +312,23 @@ export function SessionRunningMenu(props: {
       </div>
     </Show>
   )
+}
+
+function runningLabel(
+  item: RunningItem,
+  t: (key: "ui.tool.shell" | "ui.tool.subscription" | "ui.tool.agent.default") => string,
+) {
+  switch (item.type) {
+    case "shell":
+      return t("ui.tool.shell")
+    case "subscription":
+      return item.server ?? t("ui.tool.subscription")
+    case "subagent":
+      return item.agent ? `${item.agent[0].toUpperCase()}${item.agent.slice(1)}` : t("ui.tool.agent.default")
+    default: {
+      const exhaustive: never = item.type
+
+      return exhaustive
+    }
+  }
 }
