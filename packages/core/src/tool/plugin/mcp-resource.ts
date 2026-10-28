@@ -2,7 +2,9 @@ export * as McpResourceTools from "./mcp-resource.js"
 
 import { ToolFailure } from "@opencode/ai"
 import type { Context } from "@opencode/plugin/effect/plugin"
-import { Effect, Schema } from "effect"
+import { SessionEvent } from "@opencode/schema/session-event"
+import { Effect, Schema, Stream } from "effect"
+import { Bus } from "../../bus.js"
 import { Mcp } from "../../mcp/index.js"
 import { Permission } from "../../permission.js"
 
@@ -11,6 +13,13 @@ export const Plugin = {
   effect: Effect.fn("McpResourceTools.Plugin")(function* (ctx: Context) {
     const mcp = yield* Mcp.Service
     const permission = yield* Permission.Service
+    const bus = yield* Bus.Service
+
+    // A session watch is local routing on top of the connection's listen stream. Drop it when the session goes away.
+    yield* bus.subscribe(SessionEvent.Deleted).pipe(
+      Stream.runForEach((event) => mcp.unsubscribeSubscriber(event.data.sessionID)),
+      Effect.forkScoped({ startImmediately: true }),
+    )
 
     yield* ctx.tool
       .transform((editor) => {
@@ -90,6 +99,91 @@ export const Plugin = {
                   ? error
                   : new ToolFailure({
                       message: `Unable to read MCP resource ${input.server}:${input.uri}: ${error.message}`,
+                      error,
+                    }),
+              ),
+            ),
+        })
+        editor.add({
+          name: "subscribe_mcp_resource",
+          options: { namespace: "opencode", codemode: true },
+          description:
+            "Watch one MCP resource for this session. OpenCode opens a subscription on its connection to that server and, when the resource changes, reads it again and steers this session with the new contents. Use an exact URI from list_mcp_resources, an expanded uriTemplate, or the user. honored is false when the server did not accept the subscription.",
+          input: Schema.Struct({
+            server: Schema.String.annotate({ description: "The server field of the resource." }),
+            uri: Schema.String.annotate({ description: "Exact resource URI to watch." }),
+          }),
+          output: Schema.Struct({
+            server: Schema.String,
+            uri: Schema.String,
+            honored: Schema.Boolean,
+          }),
+          execute: (input, context) =>
+            Effect.gen(function* () {
+              yield* permission.assert({
+                action: "opencode_read_mcp_resource",
+                resources: [`${input.server}:${input.uri}`],
+                save: [`${input.server}:*`],
+                metadata: { server: input.server, uri: input.uri },
+                sessionID: context.sessionID,
+                agent: context.agent,
+                source: { type: "tool", messageID: context.messageID, id: context.id },
+              })
+              const server = (yield* mcp.servers()).find((item) => item.name === input.server)
+              if (server?.status.status !== "connected")
+                return yield* new ToolFailure({ message: `MCP server "${input.server}" is not connected` })
+              const result = yield* mcp.subscribeResource({
+                server: input.server,
+                uri: input.uri,
+                subscriber: context.sessionID,
+              })
+              return { output: { server: input.server, uri: input.uri, honored: result.honored } }
+            }).pipe(
+              Effect.mapError((error) =>
+                error instanceof ToolFailure
+                  ? error
+                  : new ToolFailure({
+                      message: `Unable to subscribe to MCP resource ${input.server}:${input.uri}: ${error.message}`,
+                      error,
+                    }),
+              ),
+            ),
+        })
+        editor.add({
+          name: "unsubscribe_mcp_resource",
+          options: { namespace: "opencode", codemode: true },
+          description: "Stop watching an MCP resource for this session.",
+          input: Schema.Struct({
+            server: Schema.String.annotate({ description: "The server field of the resource." }),
+            uri: Schema.String.annotate({ description: "Exact resource URI passed to subscribe_mcp_resource." }),
+          }),
+          output: Schema.Struct({
+            server: Schema.String,
+            uri: Schema.String,
+          }),
+          execute: (input, context) =>
+            Effect.gen(function* () {
+              yield* permission.assert({
+                action: "opencode_read_mcp_resource",
+                resources: [`${input.server}:${input.uri}`],
+                save: [`${input.server}:*`],
+                metadata: { server: input.server, uri: input.uri },
+                sessionID: context.sessionID,
+                agent: context.agent,
+                source: { type: "tool", messageID: context.messageID, id: context.id },
+              })
+              yield* mcp.unsubscribeResource({
+                server: input.server,
+                uri: input.uri,
+                subscriber: context.sessionID,
+              })
+              return { output: { server: input.server, uri: input.uri } }
+            }).pipe(
+              Effect.mapError((error) =>
+                error instanceof ToolFailure
+                  ? error
+                  : new ToolFailure({
+                      message: `Unable to unsubscribe from MCP resource ${input.server}:${input.uri}: ${error.message}`,
                       error,
                     }),
               ),

@@ -53,36 +53,46 @@ export const Plugin: EffectPlugin<Session.Service | Bus.Service | Location.Servi
       return selectWakeTargets(here, active)
     })
 
+    const steer = (
+      sessionID: Session.ID,
+      event: { readonly server: string; readonly uri: string; readonly text?: string },
+    ) =>
+      sessions
+        .synthetic({
+          sessionID,
+          description: `${event.server} updated ${event.uri}`,
+          text: [
+            `MCP server "${event.server}" reported that resource ${event.uri} changed.`,
+            event.text ?? "OpenCode re-read the resource and it had no text contents.",
+          ].join("\n"),
+          metadata: { source: "mcp.subscription", server: event.server, uri: event.uri },
+        })
+        .pipe(
+          Effect.catch((error: unknown) =>
+            Effect.logWarning("failed to wake session for MCP resource update", {
+              sessionID,
+              server: event.server,
+              uri: event.uri,
+              error: error instanceof Error ? error.message : String(error),
+            }),
+          ),
+        )
+
     yield* bus.subscribe(McpEvent.ResourceUpdated).pipe(
-      Stream.filter((event) => event.data.wake),
+      Stream.filter((event) => event.data.wake || event.data.subscribers.length > 0),
       Stream.runForEach((event) =>
         Effect.gen(function* () {
-          const selected = yield* targets()
-          yield* Effect.forEach(
-            selected,
-            (session) =>
-              sessions
-                .synthetic({
-                  sessionID: session.id,
-                  description: `${event.data.server} updated ${event.data.uri}`,
-                  text: [
-                    `MCP server "${event.data.server}" reported that resource ${event.data.uri} changed.`,
-                    "Read it again if this session depends on it, then respond to the change.",
-                  ].join("\n"),
-                  metadata: { source: "mcp.subscription", server: event.data.server, uri: event.data.uri },
-                })
-                .pipe(
-                  Effect.catch((error: unknown) =>
-                    Effect.logWarning("failed to wake session for MCP resource update", {
-                      sessionID: session.id,
-                      server: event.data.server,
-                      uri: event.data.uri,
-                      error: error instanceof Error ? error.message : String(error),
-                    }),
-                  ),
-                ),
-            { discard: true },
-          )
+          const ids = new Set<Session.ID>()
+          // Config wake fans out across the workspace. A session watch steers only that session.
+          if (event.data.wake) for (const session of yield* targets()) ids.add(session.id)
+          for (const subscriber of event.data.subscribers) {
+            const session = yield* sessions
+              .get(Session.ID.make(subscriber))
+              .pipe(Effect.catchTag("Session.NotFoundError", () => Effect.succeed(undefined)))
+            if (!session || session.time.archived !== undefined) continue
+            ids.add(session.id)
+          }
+          yield* Effect.forEach(ids, (sessionID) => steer(sessionID, event.data), { discard: true })
         }),
       ),
       Effect.forkScoped({ startImmediately: true }),

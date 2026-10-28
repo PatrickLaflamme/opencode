@@ -1267,7 +1267,7 @@ describe.each([
           )
           const updated = yield* Deferred.make<string>()
           connection.onResourceUpdated((uri) => Deferred.doneUnsafe(updated, Exit.succeed(uri)))
-          yield* connection.subscribeResources(["docs://readme"])
+          expect(yield* connection.subscribeResources(["docs://readme"])).toEqual({ honored: ["docs://readme"] })
           if (era === "legacy") expect(server.state.subscriptions).toEqual(["docs://readme"])
           yield* Effect.promise(() => server.sendResourceUpdated("docs://readme"))
           expect(yield* Deferred.await(updated)).toBe("docs://readme")
@@ -1299,7 +1299,10 @@ describe.each([
               Effect.retry({ times: 20 }),
             )
             expect(updates()).toEqual([
-              { type: McpEvent.ResourceUpdated.type, data: { server: "resources", uri: "docs://readme", wake: true } },
+              {
+                type: McpEvent.ResourceUpdated.type,
+                data: { server: "resources", uri: "docs://readme", wake: true, subscribers: [], text: "hello" },
+              },
             ])
           }).pipe(
             Effect.provide(
@@ -1311,6 +1314,68 @@ describe.each([
                   protocol,
                   subscriptions: ["docs://readme"],
                   wake: true,
+                }),
+                undefined,
+                undefined,
+                { events },
+              ),
+            ),
+          )
+        }),
+      ),
+    )
+  })
+
+  test("publishes a session subscriber without waking the workspace", async () => {
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const server = yield* resourceServer({ modern: era === "modern", subscribe: true })
+          const events: Array<{ type: string; data: unknown }> = []
+          yield* Effect.gen(function* () {
+            const mcp = yield* Mcp.Service
+            yield* settled(mcp)
+            expect(
+              yield* mcp.subscribeResource({ server: "resources", uri: "docs://readme", subscriber: "ses_watch" }),
+            ).toEqual({ honored: true })
+            yield* Effect.promise(() => server.sendResourceUpdated("docs://other"))
+            yield* Effect.promise(() => server.sendResourceUpdated("docs://readme"))
+            const updates = () => events.filter((event) => event.type === McpEvent.ResourceUpdated.type)
+            yield* Effect.sleep("20 millis").pipe(
+              Effect.andThen(
+                Effect.sync(updates).pipe(
+                  Effect.filterOrFail(
+                    (items) => items.length >= 1,
+                    () => new Error("MCP resource update was not published"),
+                  ),
+                ),
+              ),
+              Effect.retry({ times: 20 }),
+            )
+            expect(updates()).toEqual([
+              {
+                type: McpEvent.ResourceUpdated.type,
+                data: {
+                  server: "resources",
+                  uri: "docs://readme",
+                  wake: false,
+                  subscribers: ["ses_watch"],
+                  text: "hello",
+                },
+              },
+            ])
+            yield* mcp.unsubscribeResource({ server: "resources", uri: "docs://readme", subscriber: "ses_watch" })
+            yield* Effect.promise(() => server.sendResourceUpdated("docs://readme"))
+            yield* Effect.sleep("80 millis")
+            expect(updates()).toHaveLength(1)
+          }).pipe(
+            Effect.provide(
+              resourceMcpLayer(
+                new ConfigMCP.Remote({
+                  type: "remote",
+                  url: server.url,
+                  oauth: false,
+                  protocol,
                 }),
                 undefined,
                 undefined,
@@ -1527,7 +1592,7 @@ it.live("discovers and reads MCP resources through Code Mode", () =>
     yield* Effect.gen(function* () {
       const mcp = yield* Mcp.Service
       yield* settled(mcp)
-      yield* registerToolPlugin(McpResourceTools.Plugin).pipe(Effect.provide(permissions))
+      yield* registerToolPlugin(McpResourceTools.Plugin).pipe(Effect.provide(permissions), Effect.provide(events))
       const tools = yield* Tool.Service
       const snapshot = yield* tools.snapshot()
       const sessionID = Session.ID.make("ses_resource_tools")

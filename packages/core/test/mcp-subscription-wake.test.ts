@@ -18,6 +18,7 @@ import { SessionStore } from "@opencode/core/session/store"
 import { SessionTransfer } from "@opencode/core/session/transfer"
 import { LocationServiceMap } from "@opencode/core/location-service-map"
 import { McpSubscriptionWakePlugin, selectWakeTargets } from "@opencode/core/plugin/mcp-subscription-wake"
+import { matchesSubscribedUri } from "@opencode/core/mcp/subscription"
 import { testEffect } from "./lib/effect"
 import { location } from "./fixture/location"
 import { globalProjectNode } from "./lib/project"
@@ -31,6 +32,17 @@ const candidate = (
   id: id(value),
   parentID: input.parentID,
   time: { archived: input.archived ? 1 : undefined },
+})
+
+describe("matchesSubscribedUri", () => {
+  test("accepts the subscribed URI and its sub-resources", () => {
+    expect(matchesSubscribedUri("docs://readme", "docs://readme")).toBe(true)
+    expect(matchesSubscribedUri("file:///project", "file:///project/src/main.rs")).toBe(true)
+    expect(matchesSubscribedUri("file:///project/", "file:///project/src/main.rs")).toBe(true)
+    expect(matchesSubscribedUri("docs://readme", "docs://readme?v=2")).toBe(true)
+    expect(matchesSubscribedUri("file:///a", "file:///ab")).toBe(false)
+    expect(matchesSubscribedUri("docs://readme", "docs://other")).toBe(false)
+  })
 })
 
 describe("selectWakeTargets", () => {
@@ -93,12 +105,23 @@ it.live("steers the newest session when an MCP subscription update asks to wake"
       Effect.forkScoped({ startImmediately: true }),
     )
 
-    yield* bus.publish(McpEvent.ResourceUpdated, { server: "docs", uri: "docs://other", wake: false })
+    yield* bus.publish(McpEvent.ResourceUpdated, {
+      server: "docs",
+      uri: "docs://other",
+      wake: false,
+      subscribers: [],
+    })
     yield* Effect.sleep("30 millis")
     expect(yield* sessions.inbox(newer.id)).toEqual([])
     expect(yield* sessions.inbox(older.id)).toEqual([])
 
-    yield* bus.publish(McpEvent.ResourceUpdated, { server: "docs", uri: "docs://readme", wake: true })
+    yield* bus.publish(McpEvent.ResourceUpdated, {
+      server: "docs",
+      uri: "docs://readme",
+      wake: true,
+      subscribers: [],
+      text: "hello",
+    })
     const pending = yield* sessions.inbox(newer.id).pipe(
       Effect.filterOrFail(
         (items) => items.length === 1,
@@ -111,7 +134,7 @@ it.live("steers the newest session when an MCP subscription update asks to wake"
       delivery: "steer",
       payload: {
         description: "docs updated docs://readme",
-        text: 'MCP server "docs" reported that resource docs://readme changed.\nRead it again if this session depends on it, then respond to the change.',
+        text: 'MCP server "docs" reported that resource docs://readme changed.\nhello',
         metadata: { source: "mcp.subscription", server: "docs", uri: "docs://readme" },
       },
     })

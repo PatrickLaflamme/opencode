@@ -137,11 +137,15 @@ export interface Connection {
   readonly onResourcesChanged: (callback: () => void) => void
   readonly onResourceUpdated: (callback: (uri: string) => void) => void
   /**
-   * Subscribes to update notifications for these resource URIs. On a 2026-07-28 connection that is a
-   * `subscriptions/listen` stream; on a legacy connection it is `resources/subscribe`. The listen
-   * stream is kept open until the connection scope closes and is reopened if the server drops it.
+   * Subscribes to update notifications for these resource URIs. On a 2026-07-28 connection that is one
+   * `subscriptions/listen` stream; on a legacy connection it is `resources/subscribe` per URI.
+   * `honored` is the subset the server acknowledged. The stream stays open until its scope closes and
+   * is reopened when the server drops it, because the server keeps no subscription state across reconnects.
+   * Closing the scope cancels the stream (`notifications/cancelled` on 2026-07-28, `resources/unsubscribe` on legacy).
    */
-  readonly subscribeResources: (uris: readonly string[]) => Effect.Effect<void, never, Scope.Scope>
+  readonly subscribeResources: (
+    uris: readonly string[],
+  ) => Effect.Effect<{ readonly honored: readonly string[] }, never, Scope.Scope>
 }
 
 /**
@@ -395,26 +399,38 @@ export const connect = Effect.fnUntraced(function* (
       subscribeResources: (uris) =>
         Effect.gen(function* () {
           const unique = [...new Set(uris)]
-          if (unique.length === 0) return
+          if (unique.length === 0) return { honored: [] }
           // Legacy era only: per-URI resources/subscribe. 2026-07-28 delivers updates on subscriptions/listen.
           if (client.getProtocolEra() !== "modern") {
-            yield* Effect.forEach(
+            const results = yield* Effect.forEach(
               unique,
               (uri) =>
                 request("subscribe to MCP resource", (signal) => client.subscribeResource({ uri }, { signal })).pipe(
-                  Effect.ignore,
+                  Effect.as(uri),
+                  Effect.catch(() => Effect.succeed(undefined)),
                 ),
-              { concurrency: "unbounded", discard: true },
+              { concurrency: "unbounded" },
             )
-            return
+            const honored = results.flatMap((uri) => (uri ? [uri] : []))
+            if (honored.length > 0)
+              yield* Effect.addFinalizer(() =>
+                Effect.forEach(
+                  honored,
+                  (uri) =>
+                    request("unsubscribe from MCP resource", (signal) =>
+                      client.unsubscribeResource({ uri }, { signal }),
+                    ).pipe(Effect.ignore),
+                  { concurrency: "unbounded", discard: true },
+                ),
+              )
+            return { honored }
           }
 
-          const ready = yield* Deferred.make<void>()
-          const announce = Effect.suspend(() =>
+          const ready = yield* Deferred.make<readonly string[]>()
+          const announce = (honored: readonly string[]) =>
             Deferred.isDone(ready).pipe(
-              Effect.flatMap((done) => (done ? Effect.void : Deferred.succeed(ready, undefined))),
-            ),
-          )
+              Effect.flatMap((done) => (done ? Effect.void : Deferred.succeed(ready, honored))),
+            )
           yield* Effect.gen(function* () {
             let current: { close: () => Promise<void> } | undefined
             yield* Effect.addFinalizer(() =>
@@ -431,23 +447,24 @@ export const connect = Effect.fnUntraced(function* (
                   server,
                   error: error instanceof Error ? error.message : String(error),
                 })
-                yield* announce
+                yield* announce([])
                 return
               }
               current = opened.value
+              const honored = [...(opened.value.honoredFilter.resourceSubscriptions ?? [])]
               yield* Effect.logInfo("subscribed to MCP resources", {
                 server,
                 uris: unique,
-                honored: opened.value.honoredFilter,
+                honored,
               })
-              yield* announce
+              yield* announce(honored)
               const reason = yield* Effect.promise(() => opened.value.closed)
               current = undefined
               if (reason !== "remote") return
               yield* Effect.sleep("1 second")
             }
           }).pipe(Effect.forkScoped({ startImmediately: true }))
-          yield* Deferred.await(ready)
+          return { honored: yield* Deferred.await(ready) }
         }),
     } satisfies Connection
   }
