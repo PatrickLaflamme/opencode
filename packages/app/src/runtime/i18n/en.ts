@@ -628,6 +628,8 @@ export const dict = {
   "session.activity.subagents.other": "{{count}} subagents",
   "session.activity.shells.one": "{{count}} shell",
   "session.activity.shells.other": "{{count}} shells",
+  "session.activity.subscriptions.one": "{{count}} subscription",
+  "session.activity.subscriptions.other": "{{count}} subscriptions",
   "session.activity.shell.back": "Back to background work",
   "session.activity.shell.stop": "Stop",
   "session.activity.shell.stopping": "Stopping…",
@@ -637,6 +639,7 @@ export const dict = {
   "session.activity.shell.killed": "Stopped",
   "session.activity.shell.empty": "No output yet",
   "session.activity.summary": "{{subagents}} · {{shells}}",
+  "session.activity.summary.withSubscriptions": "{{work}} · {{subscriptions}}",
   "session.activity.section.subagents": "Subagents",
   "session.activity.section.shells": "Shells",
 

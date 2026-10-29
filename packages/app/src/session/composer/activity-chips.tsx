@@ -47,9 +47,16 @@ export function formatElapsed(ms: number, t: (key: DurationKey, params: Record<s
 }
 
 // Live work above the composer, one capsule like the iOS app's background-work summary, in the composer lane.
+export type SessionSubscriptionItem = {
+  key: string
+  server: string
+  label: string
+}
+
 export function SessionActivityChips(props: {
   subagents: readonly SessionActivityItem[]
   shells: readonly SessionActivityItem[]
+  subscriptions?: readonly SessionSubscriptionItem[]
   shell: {
     directory: string
     output: (input: ShellOutputInput) => Promise<ShellOutputOutput>
@@ -73,10 +80,19 @@ export function SessionActivityChips(props: {
     return open() && shell && !props.shells.some((item) => item.key === shell.key) ? 1 : 0
   }
 
-  const counts = () => ({ subagents: props.subagents.length, shells: props.shells.length + held() })
+  const subscriptions = () => props.subscriptions ?? []
+
+  const counts = () => ({
+    subagents: props.subagents.length,
+    shells: props.shells.length + held(),
+    subscriptions: subscriptions().length,
+  })
+
+  const listed = () => props.subagents.length + props.shells.length + subscriptions().length
 
   const active = () =>
-    settings.general.backgroundActivity() !== "off" && (counts().subagents > 0 || counts().shells > 0)
+    settings.general.backgroundActivity() !== "off" &&
+    (counts().subagents > 0 || counts().shells > 0 || counts().subscriptions > 0)
 
   const alignment = useComposerLaneAlignment()
 
@@ -136,7 +152,7 @@ export function SessionActivityChips(props: {
   const goBack = () => {
     const key = panel.state.shell?.key
 
-    if (props.subagents.length + props.shells.length === 0) return changeOpen(false)
+    if (listed() === 0) return changeOpen(false)
     panel.back()
     later(() => {
       if (!open()) return
@@ -169,7 +185,7 @@ export function SessionActivityChips(props: {
     panel.back()
     cancelAnimationFrame(frame)
 
-    if (props.subagents.length + props.shells.length > 0) return
+    if (listed() > 0) return
     later(() => {
       const active = document.activeElement
 
@@ -295,6 +311,19 @@ export function SessionActivityChips(props: {
                             {item.label}
                           </span>
                           {end(item)}
+                        </Menu.Item>
+                      )}
+                    </For>
+                    <For each={subscriptions()}>
+                      {(item) => (
+                        <Menu.Item closeOnSelect>
+                          <Icon name="mcp" class="shrink-0 text-v2-icon-icon-muted" />
+                          <span class="shrink-0 font-[530]">
+                            <bdi>{item.server || language.t("ui.tool.subscription")}</bdi>
+                          </span>
+                          <span dir="auto" class="min-w-0 flex-1 truncate text-v2-text-text-muted">
+                            {item.label}
+                          </span>
                         </Menu.Item>
                       )}
                     </For>

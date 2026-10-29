@@ -2103,7 +2103,8 @@ function SessionNoticeMessageV2(props: { message: SessionMessageInfo }) {
   const [hover, setHover] = createSignal(false)
   const metadata = () => (props.message.type === "synthetic" ? props.message.metadata : undefined)
   const source = () => stringValue(metadata()?.source)
-  const completion = () => source() === "subagent" || source() === "shell"
+  const subscription = () => source() === "subscription"
+  const completion = () => source() === "subagent" || source() === "shell" || subscription()
   const childID = () => (source() === "subagent" ? stringValue(metadata()?.childID) : undefined)
   const state = () => stringValue(metadata()?.state)
   const actor = () => (source() === "shell" ? "Shell" : Locale.titlecase(stringValue(metadata()?.agent) ?? "Subagent"))
@@ -2118,8 +2119,17 @@ function SessionNoticeMessageV2(props: { message: SessionMessageInfo }) {
     if (state() === "error") return "failed"
     return state() ?? "finished"
   }
-  const heading = () => `${state() === "completed" ? "↳" : "!"} ${actor()} ${status()}`
-  const suffix = () => Locale.truncateWidth(` · ${description()}`, Math.max(0, ctx.width - 3 - stringWidth(heading())))
+  const heading = () => {
+    if (!subscription()) return `${state() === "completed" ? "↳" : "!"} ${actor()} ${status()}`
+    const uri = stringValue(metadata()?.uri)
+    const notice =
+      description() || (uri ? `Event for subscription to ${uri} received` : "Event for subscription received")
+    return `↳ ${notice}`
+  }
+  const suffix = () =>
+    subscription()
+      ? ""
+      : Locale.truncateWidth(` · ${description()}`, Math.max(0, ctx.width - 3 - stringWidth(heading())))
   const color = () => {
     if (state() === "error") return theme.text.feedback.error.base
     if (state() === "cancelled") return theme.text.feedback.warning.base

@@ -66,6 +66,57 @@ test("prompt footer separates simultaneous subagent, shell, and usage status", a
   }
 })
 
+test("prompt footer counts active resource subscriptions", async () => {
+  const color = RGBA.fromInts(200, 200, 200)
+  const context = {
+    location: { directory: "/workspace" },
+    theme: { text: { base: color, muted: color } },
+    keymap: { shortcuts: () => [], dispatch: () => {} },
+    client: { rpc: () => ({ get: () => Promise.resolve(null), events: { on: () => () => {} } }) },
+    data: {
+      on: () => () => {},
+      session: {
+        family: () => ["session"],
+        status: () => "idle",
+        get: () => ({ id: "session", location: { directory: "/workspace" } }),
+        cost: () => 0,
+        message: {
+          list: () => [
+            {
+              type: "assistant",
+              content: [
+                {
+                  type: "tool",
+                  id: "watch",
+                  name: "opencode_subscribe_mcp_resource",
+                  state: {
+                    status: "completed",
+                    input: { server: "docs", uri: "docs://readme" },
+                    metadata: { honored: true },
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      },
+      shell: { list: () => [] },
+      location: { model: { list: () => [] } },
+    },
+  } as unknown as Context
+  const app = await testRender(() => <PromptFooter context={context} sessionID="session" mode="normal" showDetails />, {
+    width: 80,
+    height: 2,
+  })
+
+  try {
+    await app.renderOnce()
+    expect(app.captureCharFrame()).toContain("1 subscription")
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
 test("prompt footer can hide details", async () => {
   const color = RGBA.fromInts(200, 200, 200)
   const context = {

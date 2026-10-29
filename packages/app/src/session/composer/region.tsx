@@ -36,7 +36,7 @@ import { useSessionFork } from "../fork"
 import { SessionComposerRegion } from "./session-composer-region"
 import { createSessionComposerController, type SessionComposerController } from "./controller"
 import { SessionQueuePanel } from "./queue-panel"
-import { SessionActivityChips, type SessionActivityItem } from "./activity-chips"
+import { SessionActivityChips, type SessionActivityItem, type SessionSubscriptionItem } from "./activity-chips"
 import { SessionComposerLane, useComposerLaneAlignment } from "./composer-lane"
 import { SessionTodoPill } from "./todo-pill"
 import { sessionTodos, todoFinished } from "./todos"
@@ -441,6 +441,12 @@ export function ActiveSessionComposerRegion(props: {
       .flatMap((task) => (task.type === "shell" ? [{ ...task, key: task.id, target: task.id }] : [])),
   )
 
+  const subscriptions = createMemo<SessionSubscriptionItem[]>(() =>
+    props.model.region.state.background.tasks().flatMap((task) =>
+      task.type === "subscription" ? [{ key: task.id, server: task.server, label: task.label }] : [],
+    ),
+  )
+
   const alignment = useComposerLaneAlignment()
   const todos = createMemo(() => sessionTodos(props.session.history.messages(), props.session.data.revertMessageID()))
   // Like the old dock: the plan shows while the turn runs and still has work left, so stale todos never linger.
@@ -563,6 +569,7 @@ export function ActiveSessionComposerRegion(props: {
             <SessionActivityChips
               subagents={subagents()}
               shells={shells()}
+              subscriptions={subscriptions()}
               shell={shell}
               onOpen={open}
               onStop={stop}
