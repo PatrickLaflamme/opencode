@@ -19,13 +19,14 @@ export const ResourcesChanged = Event.ephemeral({
 })
 
 // A subscribed resource changed. `wake` is the server config's opt-in to steer the workspace.
-// `text` is the fresh resources/read.
+// `subscribers` are session ids that asked to watch this URI. `text` is the fresh resources/read.
 export const ResourceUpdated = Event.ephemeral({
   type: "mcp.resource.updated",
   schema: {
     server: Schema.String,
     uri: Schema.String,
     wake: Schema.Boolean,
+    subscribers: Schema.Array(Schema.String),
     text: optional(Schema.String),
   },
 })

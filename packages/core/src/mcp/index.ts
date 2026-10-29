@@ -182,6 +182,22 @@ export interface Interface extends State.Transformable<Editor> {
     readonly server: ServerName | string
     readonly uri: string
   }) => Effect.Effect<ResourceContent | undefined, Error>
+  /**
+   * Adds a subscriber for one resource URI and opens a listen stream when this is the first subscriber.
+   * `honored` is false when the server's acknowledgement omitted the URI.
+   */
+  readonly subscribeResource: (input: {
+    readonly server: ServerName | string
+    readonly uri: string
+    readonly subscriber: string
+  }) => Effect.Effect<{ readonly honored: boolean }, NotFoundError>
+  readonly unsubscribeResource: (input: {
+    readonly server: ServerName | string
+    readonly uri: string
+    readonly subscriber: string
+  }) => Effect.Effect<void, NotFoundError>
+  /** Drops every resource watch held by this subscriber and closes streams nobody else needs. */
+  readonly unsubscribeSubscriber: (subscriber: string) => Effect.Effect<void>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/MCP") {}
@@ -531,8 +547,11 @@ export const layer = (options?: Options) =>
           const table = resourceSubscribers.get(name)
           const matched = [...(table?.entries() ?? [])].filter(([subscribed]) => matchesSubscribedUri(subscribed, uri))
           if (matched.length === 0) return
+          const subscribers = [
+            ...new Set(matched.flatMap(([, ids]) => [...ids].filter((id) => id !== CONFIG_SUBSCRIBER))),
+          ]
           const wake =
-            entry.config.wake === true && matched.some(([, subscribers]) => subscribers.has(CONFIG_SUBSCRIBER))
+            entry.config.wake === true && matched.some(([, ids]) => ids.has(CONFIG_SUBSCRIBER))
           live(
             Effect.gen(function* () {
               // The notification carries only the URI. The spec's next step is resources/read.
@@ -557,6 +576,7 @@ export const layer = (options?: Options) =>
                 server: name,
                 uri,
                 wake,
+                subscribers,
                 ...(text ? { text } : {}),
               })
             }),
@@ -582,6 +602,58 @@ export const layer = (options?: Options) =>
             discard: true,
           })
         })
+
+      const closeResourceStream = (entry: ServerEntry, uri: string) => {
+        const scope = entry.resourceStreams.get(uri)
+        if (!scope) return Effect.void
+        entry.resourceStreams.delete(uri)
+        return Scope.close(scope, Exit.void)
+      }
+
+      const subscribeResource = Effect.fn("MCP.subscribeResource")(function* (input: {
+        readonly server: ServerName | string
+        readonly uri: string
+        readonly subscriber: string
+      }) {
+        const target = yield* requireServer(ServerName.make(input.server))
+        yield* target.entry.startup.await
+        const connection = target.entry.client
+        if (!connection || target.entry.status.status !== "connected") return { honored: false }
+        const subscribers = subscribersFor(target.name).get(input.uri) ?? new Set<string>()
+        subscribers.add(input.subscriber)
+        subscribersFor(target.name).set(input.uri, subscribers)
+        const honored = yield* openResourceStream(target.name, target.entry, connection, input.uri)
+        if (honored) return { honored: true }
+        subscribers.delete(input.subscriber)
+        if (subscribers.size === 0) subscribersFor(target.name).delete(input.uri)
+        return { honored: false }
+      })
+
+      const unsubscribeResource = Effect.fn("MCP.unsubscribeResource")(function* (input: {
+        readonly server: ServerName | string
+        readonly uri: string
+        readonly subscriber: string
+      }) {
+        const target = yield* requireServer(ServerName.make(input.server))
+        const subscribers = resourceSubscribers.get(target.name)?.get(input.uri)
+        if (!subscribers?.delete(input.subscriber)) return
+        if (subscribers.size > 0) return
+        resourceSubscribers.get(target.name)?.delete(input.uri)
+        yield* closeResourceStream(target.entry, input.uri)
+      })
+
+      const unsubscribeSubscriber = Effect.fn("MCP.unsubscribeSubscriber")(function* (subscriber: string) {
+        if (subscriber === CONFIG_SUBSCRIBER) return
+        for (const [name, table] of resourceSubscribers) {
+          const entry = entries.get(name)
+          for (const [uri, subscribers] of table) {
+            if (!subscribers.delete(subscriber)) continue
+            if (subscribers.size > 0) continue
+            table.delete(uri)
+            if (entry) yield* closeResourceStream(entry, uri)
+          }
+        }
+      })
 
       const startServer = (name: ServerName, entry: ServerEntry) =>
         Effect.gen(function* () {
@@ -1044,6 +1116,9 @@ export const layer = (options?: Options) =>
             ),
           })
         }),
+        subscribeResource,
+        unsubscribeResource,
+        unsubscribeSubscriber,
       })
     }),
   )

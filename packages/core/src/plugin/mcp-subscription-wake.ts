@@ -83,10 +83,19 @@ export const Plugin: EffectPlugin<Session.Service | Bus.Service | Location.Servi
     }
 
     yield* bus.subscribe(McpEvent.ResourceUpdated).pipe(
-      Stream.filter((event) => event.data.wake),
+      Stream.filter((event) => event.data.wake || event.data.subscribers.length > 0),
       Stream.runForEach((event) =>
         Effect.gen(function* () {
-          const ids = (yield* targets()).map((session) => session.id)
+          const ids = new Set<Session.ID>()
+          // Config wake fans out across the workspace. A session watch steers only that session.
+          if (event.data.wake) for (const session of yield* targets()) ids.add(session.id)
+          for (const subscriber of event.data.subscribers) {
+            const session = yield* sessions
+              .get(Session.ID.make(subscriber))
+              .pipe(Effect.catchTag("Session.NotFoundError", () => Effect.succeed(undefined)))
+            if (!session || session.time.archived !== undefined) continue
+            ids.add(session.id)
+          }
           yield* Effect.forEach(ids, (sessionID) => steer(sessionID, event.data), { discard: true })
         }),
       ),

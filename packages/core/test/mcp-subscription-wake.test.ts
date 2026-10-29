@@ -97,6 +97,7 @@ it.live("steers the newest session when an MCP subscription update asks to wake"
       server: "docs",
       uri: "docs://other",
       wake: false,
+      subscribers: [],
     })
     yield* Effect.sleep("30 millis")
     expect(yield* sessions.inbox(newer.id)).toEqual([])
@@ -106,6 +107,7 @@ it.live("steers the newest session when an MCP subscription update asks to wake"
       server: "docs",
       uri: "docs://readme",
       wake: true,
+      subscribers: [],
       text: "hello",
     })
     const pending = yield* sessions.inbox(newer.id).pipe(
