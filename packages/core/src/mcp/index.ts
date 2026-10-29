@@ -7,7 +7,21 @@ import type { Session } from "@opencode/schema/session"
 import type { Transport } from "@modelcontextprotocol/client"
 import { createHash } from "node:crypto"
 import { isDeepStrictEqual } from "node:util"
-import { Cause, Context, Effect, Exit, FiberSet, Latch, Layer, Schema, Scope, Semaphore, Stream, Types } from "effect"
+import {
+  Cause,
+  Context,
+  Deferred,
+  Effect,
+  Exit,
+  FiberSet,
+  Latch,
+  Layer,
+  Schema,
+  Scope,
+  Semaphore,
+  Stream,
+  Types,
+} from "effect"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
 import { Credential } from "../credential.js"
 import { Bus } from "../bus.js"
@@ -19,6 +33,7 @@ import { Location } from "../location.js"
 import { waitForAbort } from "@opencode/util/process"
 import { State } from "../state.js"
 import type { McpClient } from "./client.js"
+import { CONFIG_SUBSCRIBER, matchesSubscribedUri, resourceUpdateText } from "./subscription.js"
 
 export const ServerName = Schema.String.pipe(Schema.brand("MCP.ServerName"))
 export type ServerName = typeof ServerName.Type
@@ -87,6 +102,10 @@ type ServerEntry = {
   // Set when a remote server is registered as an OAuth integration; the credential lives in the global store.
   integrationID?: Integration.ID
   registration?: State.Registration
+  // One listen stream (or legacy subscribe) per URI. Cleared when the connection scope closes.
+  readonly resourceStreams: Map<string, Scope.Closeable>
+  readonly pendingOpens: Map<string, Deferred.Deferred<boolean>>
+  updatesBound?: boolean
 }
 
 // A client-hosted MCP server attached over a connection the client opened. Internal: never listed,
@@ -100,6 +119,14 @@ type AttachedEntry = {
 
 // Bounds re-listing the tools of an attached connection that takes over the top of its stack.
 const FALLBACK_LIST_TIMEOUT = "5 seconds"
+
+const emptyEntry = (config: Mcp.ServerConfig, status: Status): ServerEntry => ({
+  config,
+  status,
+  startup: Latch.makeUnsafe(),
+  resourceStreams: new Map(),
+  pendingOpens: new Map(),
+})
 
 // MCP elicitations are Location-scoped, not Session-scoped: the server cannot attribute them to a
 // persisted session row, so their forms are owned by this opaque sentinel session identifier.
@@ -187,6 +214,9 @@ export const layer = (options?: Options) =>
 
       const entries = new Map<ServerName, ServerEntry>()
       const attached = new Map<ServerName, AttachedEntry[]>()
+      // Survives reconnects. The server drops subscription state when the stream dies, so startServer
+      // opens a new listen for whatever is still in this map. "config" is the server-config subscriber.
+      const resourceSubscribers = new Map<ServerName, Map<string, Set<string>>>()
       // Serializes lifecycle operations per server. Anything taking this lock from a connection
       // callback must stay forked: lifecycle operations close scopes while holding it, firing onClose.
       const locks = KeyedMutex.makeUnsafe<ServerName>()
@@ -448,6 +478,108 @@ export const layer = (options?: Options) =>
         connection.onResourcesChanged(() => live(bus.publish(McpEvent.ResourcesChanged, { server: name })))
       }
 
+      const subscribersFor = (name: ServerName) => {
+        const existing = resourceSubscribers.get(name)
+        if (existing) return existing
+        const created = new Map<string, Set<string>>()
+        resourceSubscribers.set(name, created)
+        return created
+      }
+
+      const releaseStreams = (entry: ServerEntry) =>
+        Effect.gen(function* () {
+          entry.updatesBound = false
+          entry.resourceStreams.clear()
+          const pending = [...entry.pendingOpens.values()]
+          entry.pendingOpens.clear()
+          yield* Effect.forEach(pending, (gate) => Deferred.succeed(gate, false), { discard: true })
+        })
+
+      // One `subscriptions/listen` (or legacy subscribe) per configured URI.
+      const openResourceStream = (
+        name: ServerName,
+        entry: ServerEntry,
+        connection: McpClient.Connection,
+        uri: string,
+      ) =>
+        Effect.gen(function* () {
+          const parent = entry.scope
+          if (!parent) return false
+          if (entry.resourceStreams.has(uri)) return true
+          const inflight = entry.pendingOpens.get(uri)
+          if (inflight) return yield* Deferred.await(inflight)
+          const gate = yield* Deferred.make<boolean>()
+          entry.pendingOpens.set(uri, gate)
+          const scope = yield* Scope.fork(parent)
+          const result = yield* connection.subscribeResources([uri]).pipe(Scope.provide(scope), Effect.exit)
+          const honored = Exit.isSuccess(result) && result.value.honored.includes(uri)
+          if (honored) entry.resourceStreams.set(uri, scope)
+          if (!honored) yield* Scope.close(scope, Exit.void)
+          if (!honored)
+            yield* Effect.logWarning("MCP server did not honor resource subscription", { server: name, uri })
+          entry.pendingOpens.delete(uri)
+          yield* Deferred.succeed(gate, honored)
+          return honored
+        })
+
+      // Resource subscriptions are opt-in. Only URIs named in server config are opened here.
+      const bindResourceUpdates = (name: ServerName, entry: ServerEntry, connection: McpClient.Connection) => {
+        if (entry.updatesBound) return
+        entry.updatesBound = true
+        const live = whenLive(name, entry, connection)
+        connection.onResourceUpdated((uri) => {
+          const table = resourceSubscribers.get(name)
+          const matched = [...(table?.entries() ?? [])].some(([subscribed]) => matchesSubscribedUri(subscribed, uri))
+          if (!matched) return
+          live(
+            Effect.gen(function* () {
+              // The notification carries only the URI. The spec's next step is resources/read.
+              const read = yield* connection.readResource({ uri }).pipe(
+                Effect.tapError((error) =>
+                  Effect.logWarning("failed to re-read MCP resource after update", {
+                    server: name,
+                    uri,
+                    error: error.message,
+                  }),
+                ),
+                Effect.orElseSucceed(() => undefined),
+              )
+              const text = read
+                ? resourceUpdateText(
+                    read.contents.flatMap((part) =>
+                      "text" in part && part.text ? [{ type: "text" as const, text: part.text }] : [],
+                    ),
+                  )
+                : undefined
+              yield* bus.publish(McpEvent.ResourceUpdated, {
+                server: name,
+                uri,
+                ...(text ? { text } : {}),
+              })
+            }),
+          )
+        })
+      }
+
+      const applyResourceSubscriptions = (name: ServerName, entry: ServerEntry, connection: McpClient.Connection) =>
+        Effect.gen(function* () {
+          bindResourceUpdates(name, entry, connection)
+          const table = subscribersFor(name)
+          const configured = new Set(entry.config.subscriptions ?? [])
+          for (const uri of configured) {
+            const subscribers = table.get(uri) ?? new Set<string>()
+            subscribers.add(CONFIG_SUBSCRIBER)
+            table.set(uri, subscribers)
+          }
+          for (const [uri, subscribers] of table) {
+            if (!configured.has(uri)) subscribers.delete(CONFIG_SUBSCRIBER)
+            if (subscribers.size === 0) table.delete(uri)
+          }
+          yield* Effect.forEach([...table.keys()], (uri) => openResourceStream(name, entry, connection, uri), {
+            discard: true,
+          })
+        })
+
       const startServer = (name: ServerName, entry: ServerEntry) =>
         Effect.gen(function* () {
           // Announce the handshake so connect() and credential reconnects don't show a stale
@@ -480,8 +612,9 @@ export const layer = (options?: Options) =>
             entry.client = result.value.connection
             entry.tools = result.value.tools.map((tool) => toTool(name, entry, tool))
             entry.prompts = []
-            entry.status = { status: "connected" }
             watch(name, entry, result.value.connection)
+            yield* applyResourceSubscriptions(name, entry, result.value.connection)
+            entry.status = { status: "connected" }
             yield* Effect.logInfo("mcp connected", { server: name, tools: entry.tools.length })
             // The tool registry reads on this event; a late-connecting server has no other way to appear.
             yield* bus.publish(McpEvent.ToolsChanged, { server: name })
@@ -490,6 +623,7 @@ export const layer = (options?: Options) =>
             whenLive(name, entry, result.value.connection)(refreshPrompts(name, entry, result.value.connection))
             return
           }
+          yield* releaseStreams(entry)
           yield* Scope.close(scope, Exit.void)
           entry.scope = undefined
           const error = Cause.squash(result.cause)
@@ -505,6 +639,7 @@ export const layer = (options?: Options) =>
         )
 
       const stopServer = Effect.fnUntraced(function* (name: ServerName, entry: ServerEntry) {
+        yield* releaseStreams(entry)
         const scope = entry.scope
         if (!scope) return
         entry.scope = undefined
@@ -526,11 +661,7 @@ export const layer = (options?: Options) =>
       const replaceServer = Effect.fnUntraced(function* (name: ServerName, serverConfig: Mcp.ServerConfig) {
         const previous = entries.get(name)
         if (previous) yield* disposeServer(name, previous)
-        const entry: ServerEntry = {
-          config: serverConfig,
-          status: { status: "pending" },
-          startup: Latch.makeUnsafe(),
-        }
+        const entry = emptyEntry(serverConfig, { status: "pending" })
         entries.set(name, entry)
         yield* Effect.gen(function* () {
           yield* register(name, entry)
@@ -552,6 +683,7 @@ export const layer = (options?: Options) =>
         yield* disposeServer(name, entry)
         // Credentials are keyed by name + URL and intentionally survive removal for a later re-add.
         entries.delete(name)
+        resourceSubscribers.delete(name)
         yield* bus.publish(McpEvent.StatusChanged, { server: name })
       })
 
@@ -661,11 +793,7 @@ export const layer = (options?: Options) =>
         const servers = state.get().servers
         if (!applied && entries.size === 0) {
           for (const [name, server] of servers) {
-            entries.set(name, {
-              config: server,
-              status: { status: "pending" },
-              startup: Latch.makeUnsafe(),
-            })
+            entries.set(name, emptyEntry(server, { status: "pending" }))
           }
           yield* Effect.forEach(entries, ([name, entry]) => register(name, entry), { discard: true })
           applied = servers

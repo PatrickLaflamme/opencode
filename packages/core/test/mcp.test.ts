@@ -95,6 +95,7 @@ function resourceServer(
     modern?: boolean
     resources?: boolean
     listChanged?: boolean
+    subscribe?: boolean
     emptyElicitation?: boolean
     urlElicitation?: boolean
     /**
@@ -119,6 +120,7 @@ function resourceServer(
           { uri: "docs://logo", blob: "aGVsbG8=", mimeType: "image/png" },
         ] as Array<{ uri: string; text: string; mimeType?: string } | { uri: string; blob: string; mimeType?: string }>,
         resourceLists: 0,
+        subscriptions: [] as string[],
         resourceReads: [] as string[],
         templatesUnsupported: false,
         missing: [] as string[],
@@ -143,7 +145,9 @@ function resourceServer(
             capabilities: {
               tools: {},
               prompts: {},
-              ...(input.resources === false ? {} : { resources: { listChanged: input.listChanged } }),
+              ...(input.resources === false
+                ? {}
+                : { resources: { listChanged: input.listChanged, subscribe: input.subscribe } }),
             },
             instructions: "Use the resources tools.",
           },
@@ -242,6 +246,11 @@ function resourceServer(
             if (state.missing.includes(request.params.uri)) return Promise.reject(new Error("Resource not found"))
             return Promise.resolve({ contents: state.contents })
           })
+          protocol.setRequestHandler("resources/subscribe", (request) => {
+            state.subscriptions.push(request.params.uri)
+            return Promise.resolve({})
+          })
+          protocol.setRequestHandler("resources/unsubscribe", () => Promise.resolve({}))
         }
         return protocol
       }
@@ -275,6 +284,8 @@ function resourceServer(
         clientVersion: () => current.protocol.getClientVersion(),
         sendResourceListChanged: () =>
           modern ? Promise.resolve(modern.notify.resourcesChanged()) : current.protocol.sendResourceListChanged(),
+        sendResourceUpdated: (uri: string) =>
+          modern ? Promise.resolve(modern.notify.resourceUpdated(uri)) : current.protocol.sendResourceUpdated({ uri }),
         completeElicitation: () => current.protocol.createElicitationCompletionNotifier("elicitation-test")(),
         restart: async () => {
           await current.protocol.close().catch(() => {})
@@ -301,6 +312,7 @@ function resourceMcpLayer(
     subscribe?: Bus.Interface["subscribe"]
     environment?: Layer.Layer<Environment.Service>
     published?: string[]
+    events?: Array<{ type: string; data: unknown }>
   },
 ) {
   const directory = AbsolutePath.make(import.meta.dir)
@@ -355,6 +367,7 @@ function resourceMcpLayer(
               data,
             } as Payload<typeof definition>
             overrides?.published?.push(event.type)
+            overrides?.events?.push({ type: event.type, data })
             if (event.type !== Form.Event.Created.type || !onFormCreated) return Effect.succeed(event)
             return onFormCreated(Schema.decodeUnknownSync(Form.Event.Created.data)(data).form).pipe(Effect.as(event))
           },
@@ -1269,6 +1282,81 @@ test("lists, reads, and reports MCP resource changes", async () => {
       }),
     ),
   )
+})
+
+describe.each([
+  ["legacy", undefined],
+  ["modern", "2026-07-28"],
+] as const)("MCP resource subscriptions over the %s protocol", (era, protocol) => {
+  test("delivers updates for subscribed resources", async () => {
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const server = yield* resourceServer({ modern: era === "modern", subscribe: true })
+          const connection = yield* connect(
+            "resources",
+            new ConfigMCP.Remote({ type: "remote", url: server.url, oauth: false, protocol }),
+            import.meta.dir,
+          )
+          const updated = yield* Deferred.make<string>()
+          connection.onResourceUpdated((uri) => Deferred.doneUnsafe(updated, Exit.succeed(uri)))
+          expect(yield* connection.subscribeResources(["docs://readme"])).toEqual({ honored: ["docs://readme"] })
+          if (era === "legacy") expect(server.state.subscriptions).toEqual(["docs://readme"])
+          yield* Effect.promise(() => server.sendResourceUpdated("docs://readme"))
+          expect(yield* Deferred.await(updated)).toBe("docs://readme")
+        }),
+      ),
+    )
+  })
+
+  test("publishes the re-read text for a configured resource", async () => {
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const server = yield* resourceServer({ modern: era === "modern", subscribe: true })
+          const events: Array<{ type: string; data: unknown }> = []
+          yield* Effect.gen(function* () {
+            yield* settled(yield* Mcp.Service)
+            yield* Effect.promise(() => server.sendResourceUpdated("docs://other"))
+            yield* Effect.promise(() => server.sendResourceUpdated("docs://readme"))
+            const updates = () => events.filter((event) => event.type === McpEvent.ResourceUpdated.type)
+            yield* Effect.sleep("20 millis").pipe(
+              Effect.andThen(
+                Effect.sync(updates).pipe(
+                  Effect.filterOrFail(
+                    (items) => items.length >= 1,
+                    () => new Error("MCP resource update was not published"),
+                  ),
+                ),
+              ),
+              Effect.retry({ times: 20 }),
+            )
+            expect(updates()).toEqual([
+              {
+                type: McpEvent.ResourceUpdated.type,
+                data: { server: "resources", uri: "docs://readme", text: "hello" },
+              },
+            ])
+          }).pipe(
+            Effect.provide(
+              resourceMcpLayer(
+                new ConfigMCP.Remote({
+                  type: "remote",
+                  url: server.url,
+                  oauth: false,
+                  protocol,
+                  subscriptions: ["docs://readme"],
+                }),
+                undefined,
+                undefined,
+                { events },
+              ),
+            ),
+          )
+        }),
+      ),
+    )
+  })
 })
 
 test("does not reconnect an SSE stream after a JSON-RPC error response", async () => {
