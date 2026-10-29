@@ -96,6 +96,51 @@ function subscriptionReady(body: unknown, response: Response) {
   return response.headers.get("content-type")?.includes("text/event-stream") === true
 }
 
+// One SSE frame per pull. `onHandled` runs on the pull after a resources/updated frame, which is
+// the first point at which the client has already dispatched that frame.
+function watchResourceUpdates(response: Response, onHandled: () => void) {
+  if (!response.body || !response.headers.get("content-type")?.includes("text/event-stream")) return response
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  const encoder = new TextEncoder()
+  let buffer = ""
+  let delivered = false
+  const stream = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (delivered) {
+        delivered = false
+        onHandled()
+      }
+      while (frameEnd(buffer) === undefined) {
+        const chunk = await reader.read()
+        if (chunk.done) {
+          if (buffer.length > 0) controller.enqueue(encoder.encode(buffer))
+          controller.close()
+          return
+        }
+        buffer += decoder.decode(chunk.value, { stream: true })
+      }
+      const end = frameEnd(buffer) ?? buffer.length
+      const frame = buffer.slice(0, end)
+      buffer = buffer.slice(end)
+      if (frame.includes("notifications/resources/updated")) delivered = true
+      controller.enqueue(encoder.encode(frame))
+    },
+    cancel(reason) {
+      return reader.cancel(reason)
+    },
+  })
+  return new Response(stream, { status: response.status, headers: response.headers })
+}
+
+function frameEnd(buffer: string) {
+  const crlf = buffer.indexOf("\r\n\r\n")
+  const lf = buffer.indexOf("\n\n")
+  if (crlf !== -1 && (lf === -1 || crlf < lf)) return crlf + 4
+  if (lf === -1) return undefined
+  return lf + 2
+}
+
 async function rpcMessage(request: Request) {
   if (request.method !== "POST") return undefined
   const body: unknown = await request.clone().json()
@@ -146,6 +191,8 @@ function resourceServer(
     respond?: (request: Request) => Response | undefined | Promise<Response | undefined>
     /** Fires once the server has a resource subscription that can deliver updates. */
     onSubscriptionOpen?: () => void
+    /** Fires after the client has consumed one `notifications/resources/updated` frame. */
+    onResourceUpdateHandled?: () => void
   } = {},
 ) {
   return Effect.acquireRelease(
@@ -323,7 +370,8 @@ function resourceServer(
             subscriptionOpen = true
             input.onSubscriptionOpen()
           }
-          return response
+          if (!input.onResourceUpdateHandled) return response
+          return watchResourceUpdates(response, input.onResourceUpdateHandled)
         },
       })
       return {
@@ -1409,13 +1457,12 @@ describe.each([
   test("reads a burst of updates once, then once more for whatever arrived during that read", async () => {
     const opened = Deferred.makeUnsafe<void>()
     const reading = Deferred.makeUnsafe<void>()
+    const handled = Deferred.makeUnsafe<void>()
+    const release = Deferred.makeUnsafe<void>()
     const published = Deferred.makeUnsafe<void>()
-    let release = () => {}
-    const held = new Promise<void>((resolve) => {
-      release = resolve
-    })
     let reads = 0
     let updates = 0
+    let handledUpdates = 0
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
@@ -1423,13 +1470,18 @@ describe.each([
             modern: era === "modern",
             subscribe: true,
             onSubscriptionOpen: () => Deferred.doneUnsafe(opened, Exit.void),
+            onResourceUpdateHandled: () => {
+              handledUpdates += 1
+              // One update starts the read; the other three must be consumed before that read returns.
+              if (handledUpdates === 4) Deferred.doneUnsafe(handled, Exit.void)
+            },
             respond: async (request) => {
               const message = await rpcMessage(request)
               if (message?.method !== "resources/read") return undefined
               reads += 1
               if (reads !== 1) return undefined
               Deferred.doneUnsafe(reading, Exit.void)
-              await held
+              await Effect.runPromise(Deferred.await(release))
               return undefined
             },
           })
@@ -1441,9 +1493,8 @@ describe.each([
             yield* Effect.promise(() =>
               Promise.all([1, 2, 3].map(() => server.sendResourceUpdated("docs://readme"))),
             )
-            // The frames are already queued; yield so the client can mark the in-flight read before it is released.
-            yield* Effect.sleep("100 millis")
-            release()
+            yield* Deferred.await(handled).pipe(Effect.timeout("2 seconds"))
+            Deferred.doneUnsafe(release, Exit.void)
             yield* Deferred.await(published).pipe(Effect.timeout("2 seconds"))
             expect(reads).toBe(2)
             expect(server.state.resourceReads).toEqual(["docs://readme", "docs://readme"])
