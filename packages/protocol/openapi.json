@@ -18660,6 +18660,9 @@
             "items": {
               "type": "string"
             }
+          },
+          "wake": {
+            "type": "boolean"
           }
         },
         "required": ["type", "command"],
@@ -18755,6 +18758,9 @@
             "items": {
               "type": "string"
             }
+          },
+          "wake": {
+            "type": "boolean"
           }
         },
         "required": ["type", "url"],

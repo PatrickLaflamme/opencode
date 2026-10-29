@@ -1334,7 +1334,7 @@ describe.each([
             expect(updates()).toEqual([
               {
                 type: McpEvent.ResourceUpdated.type,
-                data: { server: "resources", uri: "docs://readme", text: "hello" },
+                data: { server: "resources", uri: "docs://readme", wake: false, text: "hello" },
               },
             ])
           }).pipe(
@@ -1346,6 +1346,55 @@ describe.each([
                   oauth: false,
                   protocol,
                   subscriptions: ["docs://readme"],
+                }),
+                undefined,
+                undefined,
+                { events },
+              ),
+            ),
+          )
+        }),
+      ),
+    )
+  })
+
+  test("sets wake when the server config opts in", async () => {
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const server = yield* resourceServer({ modern: era === "modern", subscribe: true })
+          const events: Array<{ type: string; data: unknown }> = []
+          yield* Effect.gen(function* () {
+            yield* settled(yield* Mcp.Service)
+            yield* Effect.promise(() => server.sendResourceUpdated("docs://readme"))
+            const updates = () => events.filter((event) => event.type === McpEvent.ResourceUpdated.type)
+            yield* Effect.sleep("20 millis").pipe(
+              Effect.andThen(
+                Effect.sync(updates).pipe(
+                  Effect.filterOrFail(
+                    (items) => items.length >= 1,
+                    () => new Error("MCP resource update was not published"),
+                  ),
+                ),
+              ),
+              Effect.retry({ times: 20 }),
+            )
+            expect(updates()).toEqual([
+              {
+                type: McpEvent.ResourceUpdated.type,
+                data: { server: "resources", uri: "docs://readme", wake: true, text: "hello" },
+              },
+            ])
+          }).pipe(
+            Effect.provide(
+              resourceMcpLayer(
+                new ConfigMCP.Remote({
+                  type: "remote",
+                  url: server.url,
+                  oauth: false,
+                  protocol,
+                  subscriptions: ["docs://readme"],
+                  wake: true,
                 }),
                 undefined,
                 undefined,

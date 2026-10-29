@@ -529,8 +529,10 @@ export const layer = (options?: Options) =>
         const live = whenLive(name, entry, connection)
         connection.onResourceUpdated((uri) => {
           const table = resourceSubscribers.get(name)
-          const matched = [...(table?.entries() ?? [])].some(([subscribed]) => matchesSubscribedUri(subscribed, uri))
-          if (!matched) return
+          const matched = [...(table?.entries() ?? [])].filter(([subscribed]) => matchesSubscribedUri(subscribed, uri))
+          if (matched.length === 0) return
+          const wake =
+            entry.config.wake === true && matched.some(([, subscribers]) => subscribers.has(CONFIG_SUBSCRIBER))
           live(
             Effect.gen(function* () {
               // The notification carries only the URI. The spec's next step is resources/read.
@@ -554,6 +556,7 @@ export const layer = (options?: Options) =>
               yield* bus.publish(McpEvent.ResourceUpdated, {
                 server: name,
                 uri,
+                wake,
                 ...(text ? { text } : {}),
               })
             }),
