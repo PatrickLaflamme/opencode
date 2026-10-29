@@ -153,7 +153,9 @@ export interface Connection {
    * `subscriptions/listen` stream; on a legacy connection it is `resources/subscribe` per URI.
    * `honored` is the subset the server acknowledged. The stream stays open until its scope closes and
    * is reopened when the server drops it, because the server keeps no subscription state across reconnects.
-   * Closing the scope cancels the stream (`notifications/cancelled` on 2026-07-28, `resources/unsubscribe` on legacy).
+   * A failed reopen keeps retrying with bounded backoff while the scope is open. The first open fails
+   * fast. Closing the scope aborts an in-flight listen (`notifications/cancelled` on 2026-07-28,
+   * `resources/unsubscribe` on legacy).
    */
   readonly subscribeResources: (
     uris: readonly string[],
@@ -507,23 +509,49 @@ export const connect = Effect.fnUntraced(function* (
             )
           yield* Effect.gen(function* () {
             let current: { close: () => Promise<void> } | undefined
+            let reopening = false
+            let attempt = 0
             yield* Effect.addFinalizer(() =>
               Effect.promise(() => current?.close() ?? Promise.resolve()).pipe(Effect.ignore),
             )
             while (true) {
+              // The fiber signal aborts an in-flight listen when the scope closes. Closing the
+              // transport rejects that listen as a normal error, so give the abort a turn to land
+              // before treating it as a failure worth retrying.
+              let aborted = false
+              let caller: AbortSignal | undefined
               const opened = yield* Effect.tryPromise({
-                try: () => client.listen({ resourceSubscriptions: unique }),
-                catch: failure,
+                try: (signal) => {
+                  caller = signal
+                  signal.addEventListener("abort", () => {
+                    aborted = true
+                  })
+                  return client.listen({ resourceSubscriptions: unique }, { signal })
+                },
+                catch: (error) => error,
               }).pipe(Effect.exit)
               if (Exit.isFailure(opened)) {
+                if (!(aborted || caller?.aborted || Cause.hasInterruptsOnly(opened.cause))) yield* Effect.yieldNow
+                if (aborted || caller?.aborted || Cause.hasInterruptsOnly(opened.cause)) return
                 const error = Cause.squash(opened.cause)
+                // The transport going away settles every listen; reconnect opens a new one.
+                if (error instanceof SdkError && error.code === SdkErrorCode.ConnectionClosed) return
+                const wrapped = failure(error)
                 yield* Effect.logWarning("failed to listen for MCP resource updates", {
                   server,
-                  error: error instanceof Error ? error.message : String(error),
+                  error: wrapped.message,
                 })
-                yield* announce([])
-                return
+                if (!reopening) {
+                  yield* announce([])
+                  return
+                }
+                const delay = Math.min(4_000, 250 * 2 ** attempt)
+                attempt += 1
+                yield* Effect.sleep(Duration.millis(delay))
+                continue
               }
+              reopening = true
+              attempt = 0
               current = opened.value
               const honored = [...(opened.value.honoredFilter.resourceSubscriptions ?? [])]
               yield* Effect.logInfo("subscribed to MCP resources", {

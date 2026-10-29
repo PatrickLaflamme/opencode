@@ -1,8 +1,5 @@
 export * as McpSubscription from "./subscription.js"
 
-/** Subscriber id for URIs named in MCP server config. Session ids are the other subscribers. */
-export const CONFIG_SUBSCRIBER = "config"
-
 const TEXT_LIMIT = 16_000
 
 // The spec allows `notifications/resources/updated` to name a sub-resource of the URI
